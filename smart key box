@@ -1,0 +1,165 @@
+#include <Wire.h>
+#include <hd44780.h>
+#include <hd44780ioClass/hd44780_I2Cexp.h>
+#include <Keypad.h>
+#include <SoftwareSerial.h>
+#include <ESP32Servo.h>
+
+// LCD configuration
+hd44780_I2Cexp lcd; // Automatic configuration for I2C
+
+// Keypad configuration
+const byte ROWS = 4; // Number of rows
+const byte COLS = 4; // Number of columns
+char keys[ROWS][COLS] = {
+  {'1', '2', '3', 'A'},
+  {'4', '5', '6', 'B'},
+  {'7', '8', '9', 'C'},
+  {'*', '0', '#', 'D'}
+};
+
+// GPIO pins for rows and columns
+byte rowPins[ROWS] = {12, 14, 27, 26}; // GPIO pins for rows
+byte colPins[COLS] = {25, 33, 32, 13}; // GPIO pins for columns
+
+Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
+
+// SIM800L configuration
+SoftwareSerial sim(16, 17); // RX, TX
+String phoneNumber = "+96892333982"; // Replace with the recipient's phone number
+String otp = "";               // Stores the OTP
+String inputPassword = "";     // Stores the entered password
+bool otpGenerated = false;     // Flag for OTP generation
+int _timeout;
+String _buffer;
+
+// Servo motor configuration
+Servo servoMotor; // Create a servo motor object
+const int servoPin = 23; // Connect servo motor signal pin to GPIO 23
+
+// LED configuration
+const int greenLedPin = 2; // Green LED pin
+const int redLedPin = 4;   // Red LED pin
+
+// Function to generate OTP
+void generateOTP() {
+  otp = "";
+  for (int i = 0; i < 4; i++) {
+    otp += String(random(0, 10)); // Generate a 4-digit OTP
+  }
+  Serial.print("Generated OTP: ");
+  Serial.println(otp);         // Send the OTP to the serial monitor
+  sendOTPviaSMS(otp);          // Send the OTP via SMS
+}
+
+// Function to send OTP via SMS
+void sendOTPviaSMS(String otp) {
+  sim.println("AT+CMGF=1");    // Set GSM Module in Text Mode
+  delay(1000);
+  sim.println("AT+CMGS=\"" + phoneNumber + "\"\r"); // Mobile phone number
+  delay(1000);
+  String SMS = "Your OTP is: " + otp;
+  sim.println(SMS);
+  delay(100);
+  sim.println((char)26); // ASCII code for CTRL+Z
+  delay(1000);
+  _buffer = _readSerial();
+  Serial.println("OTP sent via SMS.");
+}
+
+// Function to read serial data from SIM800L
+String _readSerial() {
+  _timeout = 0;
+  while (!sim.available() && _timeout < 12000) {
+    delay(13);
+    _timeout++;
+  }
+  if (sim.available()) {
+    return sim.readString();
+  }
+  return "";
+}
+
+void blinkLed(int ledPin, int duration) {
+  for (int i = 0; i < 5; i++) { // Blink 5 times
+    digitalWrite(ledPin, HIGH);
+    delay(duration);
+    digitalWrite(ledPin, LOW);
+    delay(duration);
+  }
+}
+
+void setup() {
+  // Initialize Serial and SIM800L
+  Serial.begin(9600);
+  sim.begin(9600);
+  delay(3000); // Allow the module to stabilize
+  Serial.println("System Started...");
+
+  // Initialize the LCD
+  int status = lcd.begin(16, 2);
+  if (status) {
+    // Handle initialization error
+    while (true);
+  }
+  lcd.backlight();
+
+  // Initialize the servo motor
+  servoMotor.attach(servoPin);
+  servoMotor.write(0); // Ensure the servo is in the initial position (locked)
+
+  // Initialize LEDs
+  pinMode(greenLedPin, OUTPUT);
+  pinMode(redLedPin, OUTPUT);
+  digitalWrite(greenLedPin, LOW);
+  digitalWrite(redLedPin, LOW);
+
+  // Generate the OTP and display it
+  generateOTP();
+  lcd.setCursor(0, 0);
+  lcd.print("Enter OTP:");
+  lcd.setCursor(0, 1);
+  lcd.print("Sent via SMS");
+}
+
+void loop() {
+  char key = keypad.getKey();
+
+  if (key) {
+    // Handle special keys
+    if (key == '#') { // Submit password
+      lcd.clear();
+      if (inputPassword == otp) {
+        lcd.print("OTP Correct!");
+        servoMotor.write(90); // Unlock the servo motor
+        blinkLed(greenLedPin, 200); // Blink green LED
+        delay(5000); // Keep the motor unlocked for 5 seconds
+        servoMotor.write(0); // Lock the servo motor again
+      } else {
+        lcd.print("Wrong OTP!");
+        blinkLed(redLedPin, 200); // Blink red LED
+      }
+      delay(2000); // Wait for 2 seconds
+      lcd.clear();
+
+      // Generate a new OTP for the next attempt
+      generateOTP();
+      lcd.setCursor(0, 0);
+      lcd.print("Enter OTP:");
+      lcd.setCursor(0, 1);
+      lcd.print("Sent via SMS");
+      inputPassword = ""; // Reset input
+    } else if (key == '*') { // Clear input
+      inputPassword = "";
+      lcd.setCursor(0, 1);
+      lcd.print("                "); // Clear the second row
+    } else {
+      // Append key to inputPassword
+      if (inputPassword.length() < 16) { // Ensure it fits on LCD
+        inputPassword += key;
+        lcd.setCursor(0, 1);
+        lcd.print(inputPassword);
+      }
+    }
+  }
+}
